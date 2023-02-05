@@ -5,6 +5,7 @@
 #include <pinetime40.h>
 #include "pinetime_board.h"
 #include "ui.h"
+#include "ui_events.h"
 
 //#include <Wire.h>
 #include <bluefruit.h>
@@ -105,6 +106,13 @@ void lvgl_drv_init(void) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
+
+float vbat_mv = 0.0;
+uint8_t vbat_per = 0;
+bool is_charging = false;
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+
 #define HYSTERESIS_MS 20
 unsigned long lastPress = 0;
 
@@ -124,15 +132,23 @@ void power_button_init(void) {
   //Serial.printf("## BT status : %i \n", digitalRead(PIN_BUTTON1));
 }
 // ---------------------------------------------------------------------------------------------------------------------------------
+void goto_charging();
 
 void charging_handler() {
-  Serial.printf("## New Charging status : %i \n", digitalRead(PIN_CHARGE_IRQ));
+  is_charging = !digitalRead(PIN_CHARGE_IRQ);
+
+  Serial.printf("## New Charging status : %i \n", is_charging);
+
+  if (is_charging) {
+    goto_charging();
+  }
 }
 
-void charging_init(void) {
+void charging_init(void) {  
   pinMode(PIN_CHARGE_IRQ, INPUT_PULLUP);
+  is_charging = !digitalRead(PIN_CHARGE_IRQ);
   attachInterrupt(PIN_CHARGE_IRQ, charging_handler, CHANGE);
-  Serial.printf("## Charging status : %i \n", digitalRead(PIN_CHARGE_IRQ));
+  //Serial.printf("## Charging status : %i \n", is_charging);
 }
 // ---------------------------------------------------------------------------------------------------------------------------------
 
@@ -174,25 +190,8 @@ uint8_t mvToPercent(float mvolts) {
   output = map(mvolts, 3300, 4200, 0, 100);
   output = constrain(output, 0, 100);
 
-  /*if (mvolts < 3300)
-    return 0;
-
-  if (mvolts < 3600) {
-    mvolts -= 3300;
-    output = mvolts / 30;
-    return output;
-  }
-
-  mvolts -= 3600;
-  output = 10 + (mvolts * 0.15F);  // thats mvolts /6.66666666
-  if (output > 100)
-    return 100;*/
   return output;
 }
-
-
-float vbat_mv = 0.0;
-uint8_t vbat_per = 0;
 
 void read_batt_status() {
 
@@ -205,6 +204,7 @@ void read_batt_status() {
   // Convert from raw mv to percentage (based on LIPO chemistry)
   vbat_per = mvToPercent(vbat_mv);
 
+  is_charging = !digitalRead(PIN_CHARGE_IRQ);
 }
 
 void show_batt_status() {
@@ -217,24 +217,103 @@ void show_batt_status() {
   Serial.print(vbat_per);
   Serial.println("%)");
 
-  Serial.printf("## Charging status : %i \n", digitalRead(PIN_CHARGE_IRQ));
+  Serial.printf("## Charging status : %i \n", is_charging);
   Serial.println();
   Serial.println();
 }
 
-static void read_status(TimerHandle_t xTimer) {  
+void get_batt_icon() {
+  if (is_charging) {
+    lv_label_set_text_fmt(ui_Config_Batt_Icon, "");
+    //lv_label_set_text_fmt(ui_BattIcon5, "");
+    lv_obj_set_style_arc_color(ui_BattLvl, lv_color_hex(0xFFFF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+  } else {
+    if (vbat_per < 10) {
+      lv_label_set_text_fmt(ui_Config_Batt_Icon, "");
+      //lv_label_set_text_fmt(ui_BattIcon5, "");
+      lv_obj_set_style_arc_color(ui_BattLvl, lv_color_hex(0xFF0000), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    } else if (vbat_per < 25) {
+      lv_label_set_text_fmt(ui_Config_Batt_Icon, "");
+      //lv_label_set_text_fmt(ui_BattIcon5, "");
+      lv_obj_set_style_arc_color(ui_BattLvl, lv_color_hex(0xFFFF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    } else if (vbat_per < 50) {
+      lv_label_set_text_fmt(ui_Config_Batt_Icon, "");
+      //lv_label_set_text_fmt(ui_BattIcon5, "");
+      lv_obj_set_style_arc_color(ui_BattLvl, lv_color_hex(0x00FF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    } else if (vbat_per < 85) {
+      lv_label_set_text_fmt(ui_Config_Batt_Icon, "");
+      //lv_label_set_text_fmt(ui_BattIcon5, "");
+      lv_obj_set_style_arc_color(ui_BattLvl, lv_color_hex(0x00FF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    } else {
+      lv_label_set_text_fmt(ui_Config_Batt_Icon, "");
+      //lv_label_set_text_fmt(ui_BattIcon5, "");
+      lv_obj_set_style_arc_color(ui_BattLvl, lv_color_hex(0x00FF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    }
+  }
+}
+
+
+void ble_send_battery(void);
+
+static void read_status(TimerHandle_t xTimer) {
   read_batt_status();
   show_batt_status();
+  ble_send_battery();
+  lv_label_set_text_fmt(ui_ConfigBatt, "%d%%", vbat_per);
+  get_batt_icon();
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
+
+void ResetReason() {
+  uint32_t reason = readResetReason();
+
+  if (reason & 0x01u) {
+    Serial.println("Reset pin");
+    return;
+  }
+  if ((reason >> 1u) & 0x01u) {
+    Serial.println("Watchdog");
+    return;
+  }
+  if ((reason >> 2u) & 0x01u) {
+    Serial.println("Soft reset");
+    return;
+  }
+  if ((reason >> 3u) & 0x01u) {
+    Serial.println("CPU Lock-up");
+    return;
+  }
+  if ((reason >> 16u) & 0x01u) {
+    Serial.println("System OFF");
+    return;
+  }
+  if ((reason >> 17u) & 0x01u) {
+    Serial.println("LPCOMP");
+    return;
+  }
+  if ((reason)&0x01u) {
+    Serial.println("Debug interface");
+    return;
+  }
+  if ((reason >> 19u) & 0x01u) {
+    Serial.println("NFC");
+    return;
+  }
+  Serial.println("Hard reset");
+}
 
 SoftwareTimer statusTimer;
 
 void init_watch() {
 
+  Serial.print("> Reset Reason : ");
+  ResetReason();
+
   Serial.println("> Watchdog init");
   watchdog_init(5000);
+
+  init_i2c();
 
   Serial.println("> Display init");
   init_display();
@@ -262,15 +341,22 @@ void init_watch() {
 
 // ---------------------------------------------------------------------------------------------------------------------------------
 
-void setStatus(lv_event_t *e) {
-  read_batt_status();
-  lv_label_set_text_fmt(ui_BattStatus, "%.2f mV / %d %%", vbat_mv, vbat_per);
+void _quick_setings(lv_event_t *e) {
+  lv_label_set_text_fmt(ui_ConfigBatt, "%d%%", vbat_per);
+  get_batt_icon();
+}
 
-  if (digitalRead(PIN_CHARGE_IRQ)) {
-    lv_label_set_text(ui_ChargingStatus, "Discharging");
-  } else {
-    lv_label_set_text(ui_ChargingStatus, "Charging");
-  }
+
+void _charging_load(lv_event_t *e) {
+  read_batt_status();
+
+  get_batt_icon();
+
+  lv_label_set_text_fmt(ui_BattStatus, "%.2f V", vbat_mv / 1000);
+
+  lv_label_set_text_fmt(ui_BattPerc, "%d%%", vbat_per);
+  lv_arc_set_value(ui_BattLvl, vbat_per);
+
 }
 
 
@@ -287,6 +373,17 @@ void goto_home() {
   }
   if (curr_screen != ui_Clock) {
     lv_scr_load_anim(ui_Clock, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 0, 0, false);
+  }
+}
+
+void goto_charging() {
+  lv_obj_t *curr_screen = lv_scr_act();
+
+  if (curr_screen == NULL) {
+    return;
+  }
+  if (curr_screen != ui_Charging) {
+    lv_scr_load_anim(ui_Charging, LV_SCR_LOAD_ANIM_MOVE_BOTTOM, 0, 0, false);
   }
 }
 
@@ -371,7 +468,7 @@ void update_time_cb(lv_timer_t *timer) {
   update_clock();
 }
 
-void set_backlight(lv_event_t *e) {
+void _set_backlight(lv_event_t *e) {
   lv_obj_t *target = lv_event_get_target(e);
   backlight.set_value_fast((int)lv_arc_get_value(target));
   lv_label_set_text_fmt(ui_Backlight_Value, "%d%%", backlight.get_value() * 100 / 128);
@@ -379,7 +476,7 @@ void set_backlight(lv_event_t *e) {
 
 // ---------------------------------------------------------------------------------------------------------------------------------
 
-void set_bl_value(lv_event_t *e) {
+void _set_bl_value(lv_event_t *e) {
   //lv_arc_set_value(ui_Backlight_Select, backlight.get_value());
 }
 
@@ -460,6 +557,12 @@ void ble_send_version(void) {
   send_data_ble(data, 4);
 }
 
+float round_to_dp(float in_value, int decimal_place) {
+  float multiplier = powf(10.0f, decimal_place);
+  in_value = roundf(in_value * multiplier) / multiplier;
+  return in_value;
+}
+
 void ble_send_battery(void) {
 
   uint8_t data[11] = {};
@@ -467,15 +570,20 @@ void ble_send_battery(void) {
 
 
   //status = 0x01; // Error
-  status = 0x02;  // charging
-  //status = 0x03; // normal
+  //status = 0x02;  // charging
+  status = 0x03;  // normal
+
+  if (is_charging) {
+    status = 0x02;
+  }
+
 
   uint8_t i = 0;
   data[i++] = 0x00;
   data[i++] = COMMAND_PT_BATTERY;
 
-  i += packInt(&data[i], 50);
-  i += packFloat(&data[i], 3.90);
+  i += packInt(&data[i], vbat_per);
+  i += packFloat(&data[i], round_to_dp((vbat_mv / 1000), 3));
   i += packByte(&data[i], status);
 
   send_data_ble(data, i);
@@ -500,18 +608,26 @@ void decode_message(uint8_t msgType, int16_t msgSize) {
       ble_send_version();
       ble_send_battery();
       break;
-      /*case COMMAND_NOTIFICATION:
+
+    case COMMAND_NOTIFICATION:
+      bleuart.flush();
       break;
+
     case COMMAND_DELETE_NOTIFICATION:
+      bleuart.flush();
       break;
+
     case COMMAND_WEATHER:
+      bleuart.flush();
       break;
 
     case COMMAND_FIND_DEVICE:
+      bleuart.flush();
       break;
 
     case COMMAND_VIBRATION:
-      break;*/
+      bleuart.flush();
+      break;
 
     default:
       bleuart.flush();
@@ -640,10 +756,10 @@ void bl_init() {
   Bluefruit.Periph.setConnectCallback(connect_callback);
   Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
 
-  Serial.println(">>BL Setting pairing PIN to: " PAIRING_PIN);
-  Bluefruit.Security.setPIN(PAIRING_PIN);
+  //Serial.println(">>BL Setting pairing PIN to: " PAIRING_PIN);
+  //Bluefruit.Security.setPIN(PAIRING_PIN);
   // Set connection secured callback, invoked when connection is encrypted
-  Bluefruit.Security.setSecuredCallback(connection_secured_callback);
+  //Bluefruit.Security.setSecuredCallback(connection_secured_callback);
 
   // To be consistent OTA DFU should be added first if it exists
   //bledfu.begin();
@@ -886,7 +1002,7 @@ void setup() {
     while (1) delay(1);
   }
 
-  ExternalFS.mkdir("/config");
+  //ExternalFS.mkdir("/config");
   Serial.println("");
   Serial.println("> External FS List Files");
   // Print whole directory tree of root whose level is 0
@@ -903,11 +1019,11 @@ void loop() {
   lv_timer_handler(); /* let the GUI do its work */
   old_sleep = lv_disp_get_inactive_time(lv_disp_get_default());
 
-  if (old_sleep > 10000) {
+  if (old_sleep > 30000) {
     backlight.dim();
-    if (old_sleep > 20000) {
+    /*if (old_sleep > 20000) {
       goto_home();
-    }
+    }*/
   } else {
     backlight.restore_dim();
   }
