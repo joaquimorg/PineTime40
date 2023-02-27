@@ -4,8 +4,10 @@
 #include <stdlib.h>
 #include <pinetime40.h>
 #include <bluefruit.h>
+#include "notification.h"
+#include "SparkFun_BMA400_Arduino_Library.h"
 
-#define SCREEN_BUFFER_SIZE 80
+#define SCREEN_BUFFER_SIZE 100
 #define SW_SLEEP_MS 20000
 
 #define VBAT_MV_PER_LSB (0.73242188F)  // 3.0V ADC range and 12-bit ADC resolution = 3000mV/4096
@@ -14,6 +16,26 @@
 #define VBAT_DIVIDER_COMP (2.05F)  // Compensation factor for the VBAT divider
 
 #define REAL_VBAT_MV_PER_LSB (VBAT_DIVIDER_COMP * VBAT_MV_PER_LSB)
+
+
+/*
+  System message
+*/
+#define MSG_POWER_BUTTON  0x01
+#define MSG_CHARGING      0x02
+#define MSG_NOTIFICATION  0x03
+
+
+struct Weather {
+  int8_t currentTemp;
+  uint8_t currentHumidity;
+  int8_t todayMaxTemp;
+  int8_t todayMinTemp;
+  char *location;
+  char *currentCondition;
+  bool newData;
+  bool hasData;
+};
 
 class PineTime {
 
@@ -39,19 +61,22 @@ public:
   static inline void readStatusCB(TimerHandle_t xTimer);
   static inline void disconnectCallback(uint16_t conn_handle, uint8_t reason);
   static inline void connectCallback(uint16_t conn_handle);
-  static inline void bleuartRXcallback(uint16_t conn_hdl);  
+  static inline void bleuartRXcallback(uint16_t conn_hdl);
 
-  static inline void powerButtonCB(lv_msg_t * m);
-  static inline void chargingStatusCB(lv_msg_t * m);
+  static inline void powerButtonCB(lv_msg_t *m);
+  static inline void chargingStatusCB(lv_msg_t *m);
+  static inline void notificationCB(lv_msg_t *m);
+
+  static inline void bma400InterruptHandler(void);
 
   float readVBAT(void);
   uint8_t mvToPercent(float mvolts);
   void readBatteryStatus(void);
   void showDebugBattStatus(void);
   void readStatus(void);
-  void callUpdateScreen(void);
 
   void updateScreen(void (*)(void));
+  void updateNotification(void (*)(void));
 
   bool battIsCharging(void) {
     return isCharging;
@@ -67,12 +92,28 @@ public:
 
   void bleSetStatus(bool connected) {
     bleConnected = connected;
-  };  
+  };
+
+  bool bleIsConnected(void) {
+    return bleConnected;
+  }
 
   void wakeUp(void);
   void goToSleep(void);
 
+  Weather getWeather(void) { return weather; };
+  void setNewWeatherData(bool newdata) { weather.newData = newdata; };
+
+  Notification getNotification(void) { return notification; };
+
+
+  uint32_t getStepCount(void) { return stepCount; };
+
 private:
+
+  Weather weather;
+  Notification notification;
+  BMA400 accelerometer;
 
   TimerHandle_t buttonTimer;
   States state = States::Running;
@@ -92,7 +133,10 @@ private:
 
   bool bleConnected = false;
 
-  lv_timer_t *timerUpdateScreen;  
+  uint32_t stepCount = 0;
+  uint8_t activityType = 0;
+
+  lv_timer_t *timerUpdateScreen;
 
   static const uint16_t screenWidth = 240;
   static const uint16_t screenHeight = 240;
@@ -111,6 +155,7 @@ private:
   SoftwareTimer timerStatus;
 
   void (*_updateScreen)(void);
+  void (*_updateNotification)(void);
 
   void lvglInitDrivers(void);
   void statusWorkTimer(void);
@@ -124,13 +169,22 @@ private:
 
   uint32_t getUartInt(void);
   uint8_t getUartByte(void);
+
   void bleuartSendData(const uint8_t *content, size_t len);
+
   void bleSendVersion(void);
   void bleSendBattery(void);
+  void bleSendSteps(void);
+  void bleSendHR(void);
+
+  void bleNotification(void);
+  void bleWeather(void);
 
   void bleDecodeMessage(uint8_t msgType, int16_t msgSize);
 
   void systemMessages(void);
+
+  void stepsConfig(void);
 };
 
 extern PineTime pinetime;

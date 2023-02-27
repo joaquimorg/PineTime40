@@ -3,8 +3,6 @@
 #include <lvgl.h>
 #include <pinetime40.h>
 #include "pinetime_board.h"
-#include "ui.h"
-#include "ui_events.h"
 
 PineTime pinetime;
 
@@ -58,10 +56,13 @@ void PineTime::updateScreen(void (*function)(void)) {
   _updateScreen = function;
 }
 
+void PineTime::updateNotification(void (*function)(void)) {
+  _updateNotification = function;
+}
+
 void PineTime::begin(void) {
   Serial.println("# PineTime nRF52840 Starting.");
   Serial.println("");
-  while (!Serial) delay(100);
 
   Serial.print("> Last reset reason : ");
   ResetReason();
@@ -70,9 +71,6 @@ void PineTime::begin(void) {
   watchdog_init(5000);
 
   init_i2c();
-
-  Serial.println("> BLE Init");
-  bluetoothInit();
 
   Serial.println("> Backlight init");
   backlight.init();
@@ -88,6 +86,11 @@ void PineTime::begin(void) {
   Serial.println("> Touch init");
   touch.init();
 
+  stepsConfig();
+
+  Serial.println("> External FS init");
+  ExternalFS.begin();
+
   Serial.println("> Power button init");
   powerButtonInit();
 
@@ -101,12 +104,13 @@ void PineTime::begin(void) {
   lv_init();
   lvglInitDrivers();
 
-  Serial.println("> UI init");
-  ui_init();
+  Serial.println("> BLE Init");
+  bluetoothInit();
 
   Serial.println("> Pinetime hardware started...");
 
   pinetime.backlight.set_value(80);
+  weather.hasData = false;
 
   // Init work timers
   initWorkTimers();
@@ -116,17 +120,17 @@ void PineTime::begin(void) {
 }
 
 void PineTime::loop(void) {
-  
+
   lv_timer_handler();
 
-  if ( state == States::Running ) { 
+  if (state == States::Running) {
     old_sleep = lv_disp_get_inactive_time(lv_disp_get_default());
     if (old_sleep > SW_SLEEP_MS) {
       backlight.dim();
       if (old_sleep > SW_SLEEP_MS * 2) {
         goToSleep();
       }
-    } else {      
+    } else {
       backlight.restore_dim();
     }
   }
@@ -134,58 +138,147 @@ void PineTime::loop(void) {
 }
 // ------------------------------------------------------------------------------------------------------------------------
 /*
-  Sleep functions
+  Step functions
 */
 
+inline void PineTime::bma400InterruptHandler(void) {
+  if (active_object) {
+    // Get the interrupt status to know which condition triggered
+    uint16_t interruptStatus = 0;
+    active_object->accelerometer.getInterruptStatus(&interruptStatus);
+    // Check if this is the step interrupt condition
+    if (interruptStatus & BMA400_ASSERTED_STEP_INT) {
+      active_object->accelerometer.getStepCount(&active_object->stepCount, &active_object->activityType);
+    } else if (interruptStatus & BMA400_ASSERTED_D_TAP_INT) {
+      Serial.println(">>> Double tap!");
+      lv_msg_send(MSG_POWER_BUTTON, NULL);
+    }
+  }
+}
+
+void PineTime::stepsConfig(void) {
+  Serial.println("> Steps init (BMA400)");
+  
+  /*while (accelerometer.beginI2C() != BMA400_OK) {
+    // Not connected, inform user
+    Serial.println(">>> Error: BMA400 not connected, check wiring and I2C address!");
+    // Wait a bit to see if connection is established
+    delay(1000);
+  }*/
+
+  if (accelerometer.beginI2C() != BMA400_OK) {
+    Serial.println(">>> Error: BMA400 not found!");
+    return;
+  } else {
+    Serial.println(">>> BMA400 connected!");    
+  }
+
+  // Here we configure the step counter feature of the BMA400. Step detection
+  // and counting is handled entirely by the sensor. The parameters used for
+  // step detection can be modified, but it's not recommended and is not well
+  // documented; see datasheet for more info. The BMA400 stores the step count
+  // as a 24-bit integer, which can be read at any time.
+  bma400_step_int_conf s_config = {
+    .int_chan = BMA400_INT_CHANNEL_1  // Which pin to use for interrupts
+  };
+  accelerometer.setStepCounterInterrupt(&s_config);
+
+  // Here we configure the tap detection feature of the BMA400. It can detect
+  // both single and double taps as a form of user input. There are a number
+  // of parameters than can be configured to help distinguish taps from other
+  // sources of noise.
+  bma400_tap_conf t_config = {
+    .axes_sel = BMA400_TAP_Z_AXIS_EN,            // Which axes to evaluate for interrupts (X/Y/Z in any combination)
+    .sensitivity = BMA400_TAP_SENSITIVITY_0,     // Sensitivity threshold, up to 7 (lower is more sensitive)
+    .tics_th = BMA400_TICS_TH_18_DATA_SAMPLES,   // Max time between top/bottom peaks of a single tap
+    .quiet = BMA400_QUIET_60_DATA_SAMPLES,       // Minimum time between taps to trigger interrupt
+    .quiet_dt = BMA400_QUIET_DT_4_DATA_SAMPLES,  // Minimum time between 2 taps to trigger double tap interrupt
+    .int_chan = BMA400_INT_CHANNEL_1             // Which pin to use for interrupts
+  };
+  accelerometer.setTapInterrupt(&t_config);
+
+  // Here we configure the INT1 pin to push/pull mode, active high
+  accelerometer.setInterruptPinMode(BMA400_INT_CHANNEL_1, BMA400_INT_PUSH_PULL_ACTIVE_1);
+
+  // Enable step counter interrupt condition. This must be set to enable step
+  // counting at all, even if you don't want interrupts to be generated.
+  // In that case,  set the interrupt channel above to BMA400_UNMAP_INT_PIN
+  accelerometer.enableInterrupt(BMA400_STEP_COUNTER_INT_EN, true);
+
+  // Enable double tap interrupt condition
+  accelerometer.enableInterrupt(BMA400_DOUBLE_TAP_INT_EN, true);
+
+  // Setup interrupt handler
+  attachInterrupt(digitalPinToInterrupt(PIN_BMA400_IRQ), PineTime::bma400InterruptHandler, ISR_DEFERRED | RISING);
+}
+
+// ------------------------------------------------------------------------------------------------------------------------
+/*
+  Sleep functions
+*/
 void PineTime::wakeUp(void) {
-  if ( state == States::Running ) return;
+  if (state == States::Running) return;
   state = States::Running;
   lv_timer_handler();
   lv_disp_trig_activity(NULL);
-  displayWakeUp();  
+  if (_updateScreen) {
+    _updateScreen();
+  }
+  touch.sleep(false);
+  displayWakeUp();
   Serial.println("# >>> Waking up.");
 }
 
 void PineTime::goToSleep(void) {
-  if ( state == States::Idle ) return;  
-  pinetime.backlight.set_value(0);
+  if (state == States::Idle) return;
+  backlight.set_value(0);
   displaySleep();
+  touch.sleep(true);
   Serial.println("# >>> Going to sleep.");
   state = States::Idle;
 }
 
 // ------------------------------------------------------------------------------------------------------------------------
-/*
-  System message functions
-*/
-#define MSG_POWER_BUTTON    0x01
-#define MSG_CHARGING        0x02
 
-inline void PineTime::powerButtonCB(lv_msg_t * m) {  
+inline void PineTime::powerButtonCB(lv_msg_t *m) {
   //lv_msg_get_user_data(m)
   //lv_msg_get_payload(m)
-  Serial.println("# >>> Power button from sysmsg...");
+  //Serial.println("# >>> Power button from sysmsg...");
   if (active_object) {
     //active_object->nnnn();
-    if ( active_object->state == States::Idle ) {
+    if (active_object->state == States::Idle) {
       active_object->wakeUp();
     }
   }
 }
 
-inline void PineTime::chargingStatusCB(lv_msg_t * m) {
+inline void PineTime::chargingStatusCB(lv_msg_t *m) {
   //lv_msg_get_user_data(m)
   //lv_msg_get_payload(m)
-  Serial.println("# >>> Charging status from sysmsg...");
-  Serial.printf("# >>> Charging status : %s \n", active_object->isCharging ? "Charging" : "Discharging");
+  //Serial.println("# >>> Charging status from sysmsg...");
   if (active_object) {
-    //active_object->nnnn();
+    Serial.printf("# >>> Charging status : %s \n", active_object->isCharging ? "Charging" : "Discharging");
+  }
+}
+
+inline void PineTime::notificationCB(lv_msg_t *m) {
+  //lv_msg_get_user_data(m)
+  //lv_msg_get_payload(m)
+  //Serial.println("# >>> New Notification");
+  if (active_object) {
+    if (active_object->_updateNotification) {
+      active_object->_updateNotification();
+      if (active_object->state == States::Idle) {
+        active_object->wakeUp();
+      }
+    }
   }
 }
 
 void PineTime::systemMessages(void) {
   lv_msg_subscribe(MSG_POWER_BUTTON, PineTime::powerButtonCB, NULL);
   lv_msg_subscribe(MSG_CHARGING, PineTime::chargingStatusCB, NULL);
+  lv_msg_subscribe(MSG_NOTIFICATION, PineTime::notificationCB, NULL);
 }
 
 // ------------------------------------------------------------------------------------------------------------------------
@@ -193,16 +286,13 @@ void PineTime::systemMessages(void) {
   Work timers functions
 */
 
-void PineTime::callUpdateScreen(void) {
-  // call update screen callback if provided
-  if (_updateScreen) {
-    _updateScreen();
-  }
-}
-
 inline void PineTime::callUpdateScreenCB(lv_timer_t *timer) {
   if (active_object) {
-    active_object->callUpdateScreen();
+    if (active_object->_updateScreen) {
+      if (active_object->state == States::Running) {
+        active_object->_updateScreen();
+      }
+    }
   }
 }
 
@@ -220,7 +310,9 @@ void PineTime::readStatus(void) {
   readBatteryStatus();
   showDebugBattStatus();
 
-  callUpdateScreen();
+  if (_updateScreen) {
+    _updateScreen();
+  }
 
   if (bleConnected) {
     bleSendBattery();
@@ -252,13 +344,12 @@ inline void PineTime::powerButtonHandler(void) {
       //Serial.println("# Power button pressed...");
       lv_msg_send(MSG_POWER_BUTTON, NULL);
     }
-
   }
 }
 
 void PineTime::powerButtonInit(void) {
   pinMode(PIN_BUTTON1, INPUT_PULLUP);
-  attachInterrupt(PIN_BUTTON1, PineTime::powerButtonHandler, ISR_DEFERRED | FALLING);
+  attachInterrupt(digitalPinToInterrupt(PIN_BUTTON1), PineTime::powerButtonHandler, ISR_DEFERRED | FALLING);
   //Serial.printf("## BT status : %i \n", digitalRead(PIN_BUTTON1));
 }
 
@@ -276,14 +367,13 @@ inline void PineTime::chargingStatusHandler(void) {
       //Serial.printf(">> Charging status : %s \n", active_object->isCharging ? "Charging" : "Discharging");
       lv_msg_send(MSG_CHARGING, NULL);
     }
-
   }
 }
 
 void PineTime::chargingStatusInit(void) {
   pinMode(PIN_CHARGE_IRQ, INPUT_PULLUP);
   isCharging = !digitalRead(PIN_CHARGE_IRQ);
-  attachInterrupt(PIN_CHARGE_IRQ, chargingStatusHandler, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PIN_CHARGE_IRQ), PineTime::chargingStatusHandler, CHANGE);
   //Serial.printf(">> Charging status : %s \n", isCharging ? "Charging" : "Discharging");
 }
 
@@ -367,18 +457,22 @@ inline void PineTime::dispFlush(lv_disp_drv_t *disp_drv, const lv_area_t *area, 
 inline void PineTime::touchpadRead(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
 
   if (active_object) {
-    active_object->touch.get();
+    if (active_object->state == States::Running) {
+      active_object->touch.get();
 
-    bool touched = active_object->touch.getEvent() == 1 ? 1 : 0;
+      bool touched = active_object->touch.getEvent() == 1 ? 1 : 0;
 
-    if (!touched) {
-      data->state = LV_INDEV_STATE_REL;
+      if (!touched) {
+        data->state = LV_INDEV_STATE_REL;
+      } else {
+        data->state = LV_INDEV_STATE_PR;
+
+        //Set the coordinates
+        data->point.x = active_object->touch.getX();
+        data->point.y = active_object->touch.getY();
+      }
     } else {
-      data->state = LV_INDEV_STATE_PR;
-
-      //Set the coordinates
-      data->point.x = active_object->touch.getX();
-      data->point.y = active_object->touch.getY();
+      data->state = LV_INDEV_STATE_REL;
     }
   }
 }
@@ -514,6 +608,82 @@ void PineTime::bleSendBattery(void) {
   bleuartSendData(data, i);
 }
 
+void PineTime::bleSendSteps(void) {
+
+  uint8_t data[6] = {};
+
+  uint8_t i = 0;
+  data[i++] = 0x00;
+  data[i++] = COMMAND_PT_STEPS;
+
+  i += packInt(&data[i], 0);  //smartwatch->stepCount.getStepCounterOutput());
+
+  bleuartSendData(data, i);
+}
+
+void PineTime::bleSendHR(void) {
+
+  uint8_t data[3] = {};
+
+  uint8_t i = 0;
+  data[i++] = 0x00;
+  data[i++] = COMMAND_PT_HEARTRATE;
+
+  data[i++] = 0;  //smartwatch->heartRate.getLastHR();
+
+  bleuartSendData(data, i);
+}
+
+void PineTime::bleNotification(void) {
+
+  char subject[31] = { 0x00 };
+  char body[61] = { 0x00 };
+
+  uint32_t id = getUartInt();
+  uint8_t type = getUartByte();
+  uint8_t hour = getUartByte();
+  uint8_t minute = getUartByte();
+
+  uint8_t sizeSubject = getUartByte();
+  bleuart.read(subject, sizeSubject);
+  //subject[size + 1] = 0x00;
+
+  uint8_t sizeBody = getUartByte();
+  bleuart.read(body, sizeBody);
+  //body[size + 1] = 0x00;
+
+  notification.add_notification(id, type, rtctime.get_timestamp(), 0, 0, 0, hour, minute, subject, sizeSubject, body, sizeBody);
+  Serial.printf(">>> %s | %s\n", subject, body);
+
+  lv_msg_send(MSG_NOTIFICATION, NULL);
+}
+
+void PineTime::bleWeather(void) {
+  uint8_t size;
+
+  weather.currentTemp = getUartByte();
+  weather.currentHumidity = getUartByte();
+  weather.todayMaxTemp = getUartByte();
+  weather.todayMinTemp = getUartByte();
+
+  size = getUartByte();
+  weather.location = (char *)malloc(size + 1);
+  bleuart.read(weather.location, size);
+  weather.location[size + 1] = 0x00;
+
+  size = getUartByte();
+  weather.currentCondition = (char *)malloc(size + 1);
+  bleuart.read(weather.currentCondition, size);
+  weather.currentCondition[size + 1] = 0x00;
+
+  weather.newData = true;
+  weather.hasData = true;
+
+  //lv_msg_send(MSG_WEATHER, NULL);
+}
+
+// ----------------------------------------------------------------------------------
+
 void PineTime::bleDecodeMessage(uint8_t msgType, int16_t msgSize) {
   switch (msgType) {
     case COMMAND_TIME_UPDATE:
@@ -521,25 +691,39 @@ void PineTime::bleDecodeMessage(uint8_t msgType, int16_t msgSize) {
       if (msgSize == 4) {
         rtctime.set_time(getUartInt());
         //backlight.restore_dim();
+        //delay(100);
+        //bleSendBattery();
       }
       break;
 
     case COMMAND_STATUS:
       Serial.println(">>BL MSG : COMMAND_STATUS");
+      //delay(100);
       //bleSendVersion();
-      bleSendBattery();
+      //delay(100);
+      //bleSendBattery();
       break;
 
     case COMMAND_NOTIFICATION:
       Serial.println(">>BL MSG : COMMAND_NOTIFICATION");
+      if (msgSize > 4) {
+        bleNotification();
+      }
       break;
 
     case COMMAND_DELETE_NOTIFICATION:
       Serial.println(">>BL MSG : COMMAND_DELETE_NOTIFICATION");
+      if (msgSize == 4) {
+        notification.clear_notification_by_id(getUartInt());
+        lv_msg_send(MSG_NOTIFICATION, NULL);
+      }
       break;
 
     case COMMAND_WEATHER:
       Serial.println(">>BL MSG : COMMAND_WEATHER");
+      if (msgSize > 4) {
+        bleWeather();
+      }
       break;
 
     case COMMAND_FIND_DEVICE:
@@ -679,7 +863,7 @@ void PineTime::bluetoothInit(void) {
   bleuart.bufferTXD(false);
   // Set Permission to access BLE Uart is to require man-in-the-middle protection
   // This will cause central to perform pairing with static PIN we set above
-  bleuart.setPermission(SECMODE_ENC_WITH_MITM, SECMODE_ENC_WITH_MITM);
+  //bleuart.setPermission(SECMODE_ENC_WITH_MITM, SECMODE_ENC_WITH_MITM);
   bleuart.begin();
 
   // Start BLE Battery Service
