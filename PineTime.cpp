@@ -44,6 +44,23 @@ void ResetReason() {
   Serial.println("Hard reset");
 }
 
+
+const char *notification_type(uint8_t type) {
+  const char *notification_names_def[11] = {
+    "Notification",
+    "Missed Call",
+    "SMS",
+    "Social",
+    "e-Mail",
+    "Calendar",
+    "WhatsApp",
+    "Messenger",
+    "Instagram",
+    "Twitter",
+    "Skype"
+  };
+  return notification_names_def[type];
+}
 // ------------------------------------------------------------------------------------------------------------------------
 
 PineTime *PineTime::active_object = 0;
@@ -72,19 +89,15 @@ void PineTime::begin(void) {
 
   init_i2c();
 
-  Serial.println("> Backlight init");
-  backlight.init();
-  backlight.set_value_fast(20);
+  Serial.println("> Touch init");
+  touch.init();
 
   Serial.println("> Display init");
-  init_display();
+  init_display();  
 
   Serial.println("> RTC init");
   rtctime.init();
-  rtctime.get_time();
-
-  Serial.println("> Touch init");
-  touch.init();
+  rtctime.get_time();  
 
   stepsConfig();
 
@@ -109,6 +122,9 @@ void PineTime::begin(void) {
 
   Serial.println("> Pinetime hardware started...");
 
+  Serial.println("> Backlight init");
+  backlight.init();
+  //backlight.set_value_fast(20);  
   pinetime.backlight.set_value(80);
   weather.hasData = false;
 
@@ -158,13 +174,6 @@ inline void PineTime::bma400InterruptHandler(void) {
 
 void PineTime::stepsConfig(void) {
   Serial.println("> Steps init (BMA400)");
-  
-  /*while (accelerometer.beginI2C() != BMA400_OK) {
-    // Not connected, inform user
-    Serial.println(">>> Error: BMA400 not connected, check wiring and I2C address!");
-    // Wait a bit to see if connection is established
-    delay(1000);
-  }*/
 
   if (accelerometer.beginI2C() != BMA400_OK) {
     Serial.println(">>> Error: BMA400 not found!");
@@ -314,9 +323,13 @@ void PineTime::readStatus(void) {
     _updateScreen();
   }
 
+  /*
   if (bleConnected) {
     bleSendBattery();
+    bleSendSteps();
+    bleSendHR();
   }
+  */
 }
 
 inline void PineTime::readStatusCB(TimerHandle_t xTimer) {
@@ -425,14 +438,13 @@ void PineTime::readBatteryStatus(void) {
   isCharging = !digitalRead(PIN_CHARGE_IRQ);
 }
 
-void PineTime::showDebugBattStatus(void) {
-  Serial.println("> Vbatt status");
-  Serial.print(">> LIPO = ");
+void PineTime::showDebugBattStatus(void) {  
+  Serial.print("> Vbatt LIPO = ");
   Serial.print(vbat_mv);
   Serial.print(" mV (");
   Serial.print(vbat_per);
-  Serial.println("%)");
-  Serial.printf(">> Charging status : %s \n", isCharging ? "Charging" : "Discharging");
+  Serial.print("%) ");
+  Serial.printf(" status : %s \n", isCharging ? "Charging" : "Discharging");
 }
 
 // ------------------------------------------------------------------------------------------------------------------------
@@ -616,7 +628,7 @@ void PineTime::bleSendSteps(void) {
   data[i++] = 0x00;
   data[i++] = COMMAND_PT_STEPS;
 
-  i += packInt(&data[i], 0);  //smartwatch->stepCount.getStepCounterOutput());
+  i += packInt(&data[i], stepCount);  //smartwatch->stepCount.getStepCounterOutput());
 
   bleuartSendData(data, i);
 }
@@ -635,26 +647,36 @@ void PineTime::bleSendHR(void) {
 }
 
 void PineTime::bleNotification(void) {
+  
+  Notification notification = { 0x00 };
 
-  char subject[31] = { 0x00 };
-  char body[61] = { 0x00 };
-
-  uint32_t id = getUartInt();
-  uint8_t type = getUartByte();
-  uint8_t hour = getUartByte();
-  uint8_t minute = getUartByte();
+  notification.notificationID = getUartInt();
+  notification.type = getUartByte();
+  notification.hour = getUartByte();
+  notification.minute = getUartByte();
 
   uint8_t sizeSubject = getUartByte();
-  bleuart.read(subject, sizeSubject);
-  //subject[size + 1] = 0x00;
 
-  uint8_t sizeBody = getUartByte();
-  bleuart.read(body, sizeBody);
-  //body[size + 1] = 0x00;
+  notification.subject = (char *)malloc(sizeSubject + 1);
+  bleuart.read(notification.subject, sizeSubject);
+  notification.subject[sizeSubject + 1] = 0x00;
 
-  notification.add_notification(id, type, rtctime.get_timestamp(), 0, 0, 0, hour, minute, subject, sizeSubject, body, sizeBody);
-  Serial.printf(">>> %s | %s\n", subject, body);
+  uint8_t sizeMessage = getUartByte();
+  notification.message = (char *)malloc(sizeMessage + 1);
+  bleuart.read(notification.message, sizeMessage);
+  notification.message[sizeMessage + 1] = 0x00;
 
+  notification.timestamp = rtctime.get_timestamp();
+
+  //notification.add_notification(id, type, rtctime.get_timestamp(), 0, 0, 0, hour, minute, subject, sizeSubject, body, sizeBody);
+  Serial.printf(">>> (%i) %s (%i) | %s (%i)\n", notifications.Size(), notification.subject, sizeSubject, notification.message, sizeMessage);
+
+  if (notifications.Size() == 4) {
+      free(notifications[0].subject);
+      free(notifications[0].message);
+      notifications.Erase(0);
+    }
+  notifications.PushBack(notification);
   lv_msg_send(MSG_NOTIFICATION, NULL);
 }
 
@@ -691,17 +713,16 @@ void PineTime::bleDecodeMessage(uint8_t msgType, int16_t msgSize) {
       if (msgSize == 4) {
         rtctime.set_time(getUartInt());
         //backlight.restore_dim();
-        //delay(100);
+        //delay(100);        
         //bleSendBattery();
+        //bleSendSteps();
+        //bleSendHR();
       }
       break;
 
     case COMMAND_STATUS:
-      Serial.println(">>BL MSG : COMMAND_STATUS");
-      //delay(100);
-      //bleSendVersion();
-      //delay(100);
-      //bleSendBattery();
+      Serial.println(">>BL MSG : COMMAND_STATUS");      
+      bleSendVersion();
       break;
 
     case COMMAND_NOTIFICATION:
@@ -714,7 +735,7 @@ void PineTime::bleDecodeMessage(uint8_t msgType, int16_t msgSize) {
     case COMMAND_DELETE_NOTIFICATION:
       Serial.println(">>BL MSG : COMMAND_DELETE_NOTIFICATION");
       if (msgSize == 4) {
-        notification.clear_notification_by_id(getUartInt());
+        //notification.clear_notification_by_id(getUartInt());
         lv_msg_send(MSG_NOTIFICATION, NULL);
       }
       break;

@@ -1,9 +1,11 @@
 #ifndef NOTIFICATION_H
 #define NOTIFICATION_H
 
-#include "Vector.h"
+//#include "Vector.h"
 
-struct _Notification {
+//typedef struct _Notification Notification;
+
+typedef struct {
   uint32_t notificationID;
   uint8_t type;
   uint16_t year;
@@ -14,8 +16,9 @@ struct _Notification {
   uint32_t timestamp;
   char *subject;
   char *message;
-};
+} Notification;
 
+/*
 class Notification {
 protected:
 
@@ -64,9 +67,6 @@ public:
   uint32_t get_notification_id(uint8_t index) {
     return notifications[index].notificationID;
   }
-  /*const char *get_notification_type(uint8_t index) {
-    return notification_type(notifications[index].type);
-  }*/
   uint32_t get_notification_timestamp(uint8_t index) {
     return notifications[index].timestamp;
   }
@@ -123,5 +123,5 @@ public:
     notification_index = index;
   }
 };
-
+*/
 #endif  //NOTIFICATION_H

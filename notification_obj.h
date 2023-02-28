@@ -4,24 +4,7 @@
 #include "PineTime.h"
 #include "notification.h"
 
-const char *notification_type(uint8_t type) {
-  const char *notification_names_def[11] = {
-    "Notification",
-    "Missed Call",
-    "SMS",
-    "Social",
-    "e-Mail",
-    "Calendar",
-    "WhatsApp",
-    "Messenger",
-    "Instagram",
-    "Twitter",
-    "Skype"
-  };
-  return notification_names_def[type];
-}
-
-lv_obj_t *notification_create_obj(lv_obj_t *parent, _Notification *notification) {  
+lv_obj_t *notification_create_obj(lv_obj_t *parent, Notification *notification) {  
 
   lv_obj_t *cui_Notification;
   cui_Notification = lv_obj_create(parent);
@@ -84,7 +67,7 @@ lv_obj_t *notification_create_obj(lv_obj_t *parent, _Notification *notification)
   lv_obj_set_width(cui_NotifTitle, lv_pct(100));
   lv_obj_set_height(cui_NotifTitle, LV_SIZE_CONTENT);  /// 1
   lv_obj_set_align(cui_NotifTitle, LV_ALIGN_CENTER);
-  lv_label_set_text(cui_NotifTitle, notification->subject);
+  lv_label_set_text_fmt(cui_NotifTitle, "%s",notification->subject);
   lv_obj_clear_flag(cui_NotifTitle, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_ELASTIC | LV_OBJ_FLAG_SCROLL_MOMENTUM | LV_OBJ_FLAG_SCROLL_CHAIN);  /// Flags
   lv_obj_set_style_text_color(cui_NotifTitle, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_text_opa(cui_NotifTitle, 255, LV_PART_MAIN | LV_STATE_DEFAULT);

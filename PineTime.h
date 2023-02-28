@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <pinetime40.h>
 #include <bluefruit.h>
+#include "Vector.h"
 #include "notification.h"
 #include "SparkFun_BMA400_Arduino_Library.h"
 
@@ -21,9 +22,11 @@
 /*
   System message
 */
-#define MSG_POWER_BUTTON  0x01
-#define MSG_CHARGING      0x02
-#define MSG_NOTIFICATION  0x03
+#define MSG_POWER_BUTTON        0x01
+#define MSG_CHARGING            0x02
+#define MSG_NOTIFICATION        0x03
+#define MSG_SHOW_NOTIFICATION   0x04
+
 
 
 struct Weather {
@@ -36,6 +39,9 @@ struct Weather {
   bool newData;
   bool hasData;
 };
+
+
+const char *notification_type(uint8_t type);
 
 class PineTime {
 
@@ -104,7 +110,8 @@ public:
   Weather getWeather(void) { return weather; };
   void setNewWeatherData(bool newdata) { weather.newData = newdata; };
 
-  Notification getNotification(void) { return notification; };
+  Notification getNotification(uint8_t not_id) { return notifications[not_id]; };
+  uint8_t getNotificationCount(void) { return notifications.Size(); };
 
 
   uint32_t getStepCount(void) { return stepCount; };
@@ -112,8 +119,20 @@ public:
 private:
 
   Weather weather;
-  Notification notification;
+  //Notification notification;
+  Vector<Notification> notifications;
+  
   BMA400 accelerometer;
+
+  Touch touch;
+
+  // BLE Service
+  //BLEDfu  bledfu;  // OTA DFU service
+  BLEDis bledis;    // device information
+  BLEUart bleuart;  // uart over ble
+  //BLEBas blebas;    // battery
+
+  SoftwareTimer timerStatus;
 
   TimerHandle_t buttonTimer;
   States state = States::Running;
@@ -143,16 +162,6 @@ private:
 
   lv_disp_draw_buf_t draw_buf;
   lv_color_t buf_1[screenWidth * SCREEN_BUFFER_SIZE];
-
-  Touch touch;
-
-  // BLE Service
-  //BLEDfu  bledfu;  // OTA DFU service
-  BLEDis bledis;    // device information
-  BLEUart bleuart;  // uart over ble
-  //BLEBas blebas;    // battery
-
-  SoftwareTimer timerStatus;
 
   void (*_updateScreen)(void);
   void (*_updateNotification)(void);

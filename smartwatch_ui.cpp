@@ -23,12 +23,6 @@ Vector<lv_obj_t *> l_not;
 // -----------------------------------------------------------------------------------------------------------------------
 // fragment screens
 
-void show_notification(void) {
-  lv_fragment_t *fragment = lv_fragment_create(&notification_cls, NULL);
-  lv_fragment_manager_push(f_manager, fragment, &root);
-}
-
-
 // -----------------------------------------------------------------------------------------------------------------------
 
 uint8_t old_min = 99;
@@ -100,8 +94,25 @@ void update_clock(void) {
 }
 
 //
+void show_notification(Notification *notification) {
+  lv_fragment_t *fragment = lv_fragment_create(&notification_cls, notification);
+  lv_fragment_manager_push(f_manager, fragment, &root);
+}
+
+static void ui_event_notification(lv_event_t *e) {
+  lv_obj_t * o_not = lv_event_get_target(e);
+
+  int notPos = l_not.Find(o_not);
+  if ( notPos != -1 ) {
+    Notification noti = pinetime.getNotification(notPos);
+    show_notification(&noti);
+  } else {
+    Serial.println(">>> notification not found...");
+  }
+}
+//
 void update_notification() {
-  if (pinetime.getNotification().get_notification_count() > 0) {
+  if (pinetime.getNotificationCount() > 0) {
 
     if (!lv_obj_has_flag(ui_MsgNoNotif, LV_OBJ_FLAG_HIDDEN)) {
       lv_obj_add_flag(ui_MsgNoNotif, LV_OBJ_FLAG_HIDDEN);
@@ -116,9 +127,15 @@ void update_notification() {
       l_not.Erase(0);
     }
 
-    lv_obj_t *o_not = notification_create_obj(ui_PanelNotif, &pinetime.getNotification().notifications[pinetime.getNotification().notifications.Size() - 1]);
+    Notification noti = pinetime.getNotification(pinetime.getNotificationCount() - 1);
+    lv_obj_t *o_not = notification_create_obj(ui_PanelNotif, &noti);
+    show_notification(&noti);
+
+    lv_obj_add_event_cb(o_not, ui_event_notification, LV_EVENT_CLICKED, NULL);
+
     l_not.PushBack(o_not);
-    lv_obj_set_tile_id(tv, 0, 0, LV_ANIM_ON);
+
+    //lv_obj_set_tile_id(tv, 0, 0, LV_ANIM_ON);
 
   } else {
     if (!lv_obj_has_flag(ui_PanelListNotf, LV_OBJ_FLAG_HIDDEN)) {
@@ -126,9 +143,9 @@ void update_notification() {
       lv_obj_clear_flag(ui_MsgNoNotif, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_add_flag(ui_Clock02Msg1, LV_OBJ_FLAG_HIDDEN);
-
   }
 }
+// -----------------------------------------------------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------------------------------------------------
 
@@ -169,7 +186,7 @@ static void ui_event_root(lv_event_t *e) {
     }
 
     if (dir == LV_DIR_BOTTOM) {
-      show_notification();
+      //show_notification();
     }
     /*if (dir == LV_DIR_LEFT) {
     }
@@ -234,10 +251,9 @@ void smartwatch_ui_init(void) {
 
   lv_obj_set_tile_id(tv, 1, 0, LV_ANIM_OFF);
 
-  f_manager = lv_fragment_manager_create(NULL);  
+  f_manager = lv_fragment_manager_create(NULL);
   lv_obj_add_event_cb(root, ui_event_root, LV_EVENT_ALL, f_manager);
 
   // animation  ???
   lv_timer_t *timeranim = lv_timer_create(timerAnim, 200, NULL);
-
 }
