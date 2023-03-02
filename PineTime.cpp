@@ -323,13 +323,12 @@ void PineTime::readStatus(void) {
     _updateScreen();
   }
 
-  /*
   if (bleConnected) {
     bleSendBattery();
     bleSendSteps();
     bleSendHR();
   }
-  */
+  
 }
 
 inline void PineTime::readStatusCB(TimerHandle_t xTimer) {
